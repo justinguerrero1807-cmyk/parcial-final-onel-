@@ -1,0 +1,536 @@
+! ================================================
+! R2 — DHCP + WAN
+! Configura primero porque todos dependen de él
+! ================================================
+enable
+configure terminal
+hostname R2
+
+! --- Interfaz hacia R3 (WAN hacia R1) ---
+interface Gig0/1
+ ip address 192.168.100.2 255.255.255.252
+ no shutdown
+ exit
+
+! --- Serial hacia R4 (DCE = clock rate) ---
+interface Serial0/0/0
+ ip address 192.168.100.10 255.255.255.252
+ clock rate 64000
+ no shutdown
+ exit
+
+! --- Serial hacia R3 (DCE = clock rate) ---
+interface Serial0/0/1
+ ip address 192.168.100.6 255.255.255.252
+ clock rate 64000
+ no shutdown
+ exit
+
+! --- DHCP: excluir IPs de routers y gateways ---
+ip dhcp excluded-address 192.168.30.1 192.168.30.10
+ip dhcp excluded-address 192.168.50.1 192.168.50.10
+ip dhcp excluded-address 192.168.99.1 192.168.99.10
+ip dhcp excluded-address 192.168.32.1 192.168.32.14
+
+! --- Pool VLAN 300 - Estudiantes ---
+ip dhcp pool VLAN300
+ network 192.168.30.0 255.255.255.0
+ default-router 192.168.30.1
+ dns-server 192.168.32.5
+ exit
+
+! --- Pool VLAN 500 - Académicos ---
+ip dhcp pool VLAN500
+ network 192.168.50.0 255.255.255.0
+ default-router 192.168.50.1
+ dns-server 192.168.32.5
+ exit
+
+! --- Pool VLAN 999 - Administrativa ---
+ip dhcp pool VLAN999
+ network 192.168.99.0 255.255.255.0
+ default-router 192.168.99.1
+ dns-server 192.168.32.5
+ exit
+
+! --- Rutas hacia VLANs de R1 (via R3 = .5) ---
+ip route 192.168.30.0 255.255.255.0 192.168.100.5
+ip route 192.168.50.0 255.255.255.0 192.168.100.5
+ip route 192.168.99.0 255.255.255.0 192.168.100.5
+! --- Rutas hacia VLANs de R4 (directo = .9) ---
+ip route 192.168.30.0 255.255.255.0 192.168.100.9
+ip route 192.168.50.0 255.255.255.0 192.168.100.9
+ip route 192.168.99.0 255.255.255.0 192.168.100.9
+! --- Ruta hacia LAN 192.168.32.0 via R3 ---
+ip route 192.168.32.0 255.255.255.0 192.168.100.5
+
+end
+write memory
+
+! ================================================
+! R3 — WAN serial + Gateway LAN del servidor
+! ================================================
+enable
+configure terminal
+hostname R3
+
+! --- Serial hacia R2 (DTE, sin clock rate) ---
+interface Serial0/0/0
+ ip address 192.168.100.5 255.255.255.252
+ no shutdown
+ exit
+
+! --- Gig0/0 → SW3 (LAN del servidor DNS/WLC) ---
+interface Gig0/0
+ ip address 192.168.32.1 255.255.255.0
+ no shutdown
+ exit
+
+! --- Ruta por defecto hacia R2 ---
+ip route 0.0.0.0 0.0.0.0 192.168.100.6
+! --- Ruta hacia R1 (via R2) ---
+ip route 192.168.100.0 255.255.255.252 192.168.100.6
+ip route 192.168.30.0 255.255.255.0 192.168.100.6
+ip route 192.168.50.0 255.255.255.0 192.168.100.6
+ip route 192.168.99.0 255.255.255.0 192.168.100.6
+
+end
+write memory
+
+! ================================================
+! R1 — WAN + Subinterfaces VLAN + HSRP Standby
+! ================================================
+enable
+configure terminal
+hostname R1
+
+! --- WAN hacia R3 ---
+interface Gig0/1
+ ip address 192.168.100.1 255.255.255.252
+ no shutdown
+ exit
+
+! --- Interfaz física hacia SW1 (sin IP) ---
+interface Gig0/0
+ no ip address
+ no shutdown
+ exit
+
+
+! *** VLAN 300 — helper apunta a R2 (192.168.100.6) ***
+interface Gig0/0.300
+ encapsulation dot1q 300
+ ip address 192.168.30.2 255.255.255.0
+ ip helper-address 192.168.100.6
+ standby 1 ip 192.168.30.1
+ standby 1 priority 90
+ standby 1 preempt
+ exit
+
+! *** VLAN 500 ***
+interface Gig0/0.500
+ encapsulation dot1q 500
+ ip address 192.168.50.2 255.255.255.0
+ ip helper-address 192.168.100.6
+ standby 2 ip 192.168.50.1
+ standby 2 priority 90
+ standby 2 preempt
+ exit
+
+! *** VLAN 999 (nativa) ***
+interface Gig0/0.999
+ encapsulation dot1q 999 native
+ ip address 192.168.99.2 255.255.255.0
+ ip helper-address 192.168.100.6
+ standby 3 ip 192.168.99.1
+ standby 3 priority 90
+ standby 3 preempt
+ exit
+
+! --- Ruta por defecto hacia R3 ---
+ip route 0.0.0.0 0.0.0.0 192.168.100.2
+
+end
+write memory
+
+! ================================================
+! R4 — Serial WAN + Subinterfaces + HSRP Activo
+! ================================================
+enable
+configure terminal
+hostname R4
+
+! --- Serial hacia R2 ---
+interface Serial0/0/0
+ ip address 192.168.100.9 255.255.255.252
+ no shutdown
+ exit
+
+! --- Interfaz física hacia SW2 (sin IP) ---
+interface Gig0/1
+ no ip address
+ no shutdown
+ exit
+
+! *** VLAN 300 — helper directo a R2 ***
+interface Gig0/1.300
+ encapsulation dot1Q 300
+ ip address 192.168.30.3 255.255.255.0
+ ip helper-address 192.168.100.10
+ standby 1 ip 192.168.30.1
+ standby 1 priority 110
+ standby 1 preempt
+ exit
+
+! *** VLAN 500 ***
+interface Gig0/1.500
+ encapsulation dot1q 500
+ ip address 192.168.50.3 255.255.255.0
+ ip helper-address 192.168.100.10
+ standby 2 ip 192.168.50.1
+ standby 2 priority 110
+ standby 2 preempt
+ exit
+
+! *** VLAN 999 (nativa) ***
+interface Gig0/1.999
+ encapsulation dot1q 999 native
+ ip address 192.168.99.3 255.255.255.0
+ ip helper-address 192.168.100.10
+ standby 3 ip 192.168.99.1
+ standby 3 priority 110
+ standby 3 preempt
+ exit
+
+! --- Ruta por defecto hacia R2 ---
+ip route 0.0.0.0 0.0.0.0 192.168.100.10
+
+end
+write memory
+
+
+! ================================================
+! SW1 — VLANs + LACP Active + STP Root
+! ================================================
+enable
+configure terminal
+hostname SW1
+
+! --- Crear VLANs ---
+vlan 300
+ name Estudiantes
+ exit
+vlan 500
+ name Academicos
+ exit
+vlan 999
+ name Nativa-Administrativa
+ exit
+
+! --- Puertos acceso VLAN 500 (Fa0/9 y Fa0/17) ---
+interface range FastEthernet0/9, FastEthernet0/17
+ switchport mode access
+ switchport access vlan 500
+ spanning-tree portfast
+ no shutdown
+ exit
+
+! --- Trunk hacia R1 (Gig0/2 según imagen) ---
+interface GigabitEthernet0/2
+ switchport mode trunk
+ switchport trunk native vlan 999
+ switchport trunk allowed vlan 300,500,999
+ no shutdown
+ exit
+
+
+! --- EtherChannel LACP hacia SW2 (SW1 = ACTIVE) ---
+interface range FastEthernet0/23-24
+ switchport mode trunk
+ switchport trunk native vlan 999
+ switchport trunk allowed vlan 300,500,999
+ channel-protocol lacp
+ channel-group 1 mode active
+ no shutdown
+ exit
+
+interface Port-channel1
+ switchport mode trunk
+ switchport trunk native vlan 999
+ switchport trunk allowed vlan 300,500,999
+ no shutdown
+ exit
+
+! --- STP: SW1 es Puente Raíz para 300, 500, 999 ---
+spanning-tree vlan 300 root primary
+spanning-tree vlan 500 root primary
+spanning-tree vlan 999 root primary
+
+! --- IP de gestión (VLAN 999) ---
+interface vlan 999
+ ip address 192.168.99.10 255.255.255.0
+ no shutdown
+ exit
+ip default-gateway 192.168.99.1
+
+end
+write memory
+
+! ================================================
+! SW2 — VLANs + LACP Passive + puertos acceso
+! ================================================
+enable
+configure terminal
+hostname SW2
+
+! --- Crear VLANs ---
+vlan 300
+ name Estudiantes
+ exit
+vlan 500
+ name Academicos
+ exit
+vlan 999
+ name Nativa-Administrativa
+ exit
+
+! --- Puertos acceso VLAN 300 (Fa0/5, Fa0/6, Fa0/20) ---
+interface range FastEthernet0/5, FastEthernet0/6, FastEthernet0/20
+ switchport mode access
+ switchport access vlan 300
+ spanning-tree portfast
+ no shutdown
+ exit
+
+! --- Trunk hacia R4 (Gig0/2 según imagen) ---
+interface GigabitEthernet0/2
+ switchport mode trunk
+ switchport trunk native vlan 999
+ switchport trunk allowed vlan 300,500,999
+ no shutdown
+ exit
+
+! --- EtherChannel LACP hacia SW1 (SW2 = PASSIVE) ---
+interface range FastEthernet0/23-24
+ switchport mode trunk
+ switchport trunk native vlan 999
+ switchport trunk allowed vlan 300,500,999
+ channel-protocol lacp
+ channel-group 1 mode passive
+ no shutdown
+ exit
+
+interface Port-channel1
+ switchport mode trunk
+ switchport trunk native vlan 999
+ switchport trunk allowed vlan 300,500,999
+ no shutdown
+ exit
+
+! --- IP de gestión (VLAN 999) ---
+interface vlan 999
+ ip address 192.168.99.11 255.255.255.0
+ no shutdown
+ exit
+ip default-gateway 192.168.99.1
+
+end
+write memory
+
+! ================================================
+! SW3 — LAN del servidor / WLC / APs
+! ================================================
+enable
+configure terminal
+hostname SW3
+
+! --- IP de gestión ---
+interface vlan 1
+ ip address 192.168.32.2 255.255.255.0
+ no shutdown
+ exit
+ip default-gateway 192.168.32.1
+
+! --- Todos los puertos en acceso (LAN plana) ---
+interface GigabitEthernet0/1
+ switchport mode access
+ spanning-tree portfast
+ no shutdown
+ exit
+
+interface FastEthernet0/1
+ switchport mode access
+ spanning-tree portfast
+ no shutdown
+ exit
+
+interface FastEthernet0/2
+ switchport mode access
+ spanning-tree portfast
+ no shutdown
+ exit
+
+interface FastEthernet0/3
+ switchport mode access
+ spanning-tree portfast
+ no shutdown
+ exit
+
+interface FastEthernet0/4
+ switchport mode access
+ spanning-tree portfast
+ no shutdown
+ exit
+
+interface GigabitEthernet0/2
+ switchport mode access
+ spanning-tree portfast
+ no shutdown
+ exit
+
+end
+write memory
+
+
+ervidor DNS-WEB-DHCP — IP estática 192.168.32.5
+Configuración IP del servidor (en PT):
+Desktop > IP Configuration (Static)
+IP Address  : 192.168.32.5
+Subnet Mask : 255.255.255.0
+Gateway     : 192.168.32.1
+DNS Server  : 192.168.32.5
+
+Services → DHCP (del servidor local para LAN 32.0):
+Pool Name   : serverPool
+Default GW  : 192.168.32.1
+DNS Server  : 192.168.32.5
+Start IP    : 192.168.32.3
+Subnet Mask : 255.255.255.0
+Max Users   : 253
+→ Save · Service: ON
+
+Services → DNS:
+DNS Service: ON
+Agrega los registros A:
+wic   → 192.168.32.4   (WLC)
+www   → 192.168.32.5   (este servidor)
+→ Add · Save
+
+Services → AAA (para WPA2-Enterprise / WLC):
+Network Configuration:
+Client Name : wic
+Client IP   : 192.168.32.4
+Secret      : cisco123
+Server type : Radius
+Port        : 1812
+→ Add
+
+User Setup:
+Username : anthony
+Password : cisco123
+→ Add
+(también agrega Duarte, Mella, Sanchez si los piden)
+
+
+
+WLC 2504 + APs — Redes inalámbricas
+IP estática del WLC (en PT → Config):
+IP Address  : 192.168.32.4
+Subnet Mask : 255.255.255.0
+Gateway     : 192.168.32.1
+DNS         : 192.168.32.5
+APs — activar DHCP en Config:
+En AP-BIBLIOTECA: Config > Interface > DHCP → ON
+En AP-LOBBY     : Config > Interface > DHCP → ON
+(así obtienen IP automática de la LAN 192.168.32.x)
+Acceder al WLC (desde Mella-Admin):
+Mella-Admin Desktop → Web Browser:
+URL    : http://192.168.32.4
+Usuario: admin
+Pass   : Cisco123
+
+Security → AAA → RADIUS:
+Server IP   : 192.168.32.5
+Shared Secret: cisco123
+Port        : 1812
+→ Apply
+WLANs — crear 3 redes:
+WLAN 1: Duarte
+Profile/SSID : Duarte
+Status       : Enabled
+Security     : WPA2 Personal
+PSK          : cisco123
+
+WLAN 2: Mella
+Profile/SSID : Mella
+Status       : Enabled
+Security     : WPA2 Personal
+PSK          : cisco123
+
+WLAN 3: Sanchez
+Profile/SSID : Sanchez
+Status       : Enabled
+Security     : WPA2 Personal
+PSK          : cisco123
+AP Groups — asignar SSIDs a cada AP:
+Grupo 1: DUARTE-SANCHEZ → AP-BIBLIOTECA
+WLANs: Duarte + Sanchez
+APs  : AP-BIBLIOTECA
+
+Grupo 2: DUARTE-MELLA → AP-LOBBY
+WLANs: Duarte + Mella
+APs  : AP-LOBBY
+
+Laptops inalámbricas (IP estática):
+Duarte-w  → SSID: Duarte  · Pass: cisco123 · WPA2
+IP: 192.168.32.20  Mask: /24  GW: 192.168.32.1  DNS: 192.168.32.5
+
+Mella-w   → SSID: Mella   · Pass: cisco123 · WPA2
+IP: 192.168.32.21  Mask: /24  GW: 192.168.32.1  DNS: 192.168.32.5
+
+Sanchez-w → SSID: Sanchez · Pass: cisco123 · WPA2
+IP: 192.168.32.22  Mask: /24  GW: 192.168.32.1  DNS: 192.168.32.5
+
+
+! ================================================
+! BLOQUE SSH — pegar en R1, R2, R3, R4, SW1, SW2, SW3
+! Cambia el hostname al principio según el equipo
+! ================================================
+
+enable
+configure terminal
+
+! --- Dominio (necesario para generar clave RSA) ---
+ip domain-name campus.local
+
+! --- Generar clave RSA 1024 bits ---
+crypto key generate rsa general-keys modulus 1024
+! (escribe "yes" si pregunta, luego Enter)
+
+! --- SSH versión 2 ---
+ip ssh version 2
+
+! --- Usuarios (matricula sin privilegio, opelegrino admin) ---
+username TU_MATRICULA privilege 1 secret Fe2024
+username opelegrino privilege 15 secret Fe2024
+
+! --- Enable secret (contraseña privilegiado) ---
+enable secret Fe2024
+
+! --- Consola local ---
+line console 0
+ password Fe2024
+ login
+ exit
+
+! --- VTY solo SSH, autenticación local ---
+line vty 0 4
+ transport input ssh
+ login local
+ exit
+
+! --- Cifrar contraseñas en texto plano ---
+service password-encryption
+
+end
+write memory
